@@ -3,17 +3,14 @@ package com.nomulabo.lxiroid
 import android.util.Log
 import java.io.*
 import java.net.ServerSocket
-import java.net.SocketException
 import java.net.Socket
-import android.os.Build
-
-
 
 class ScpiSocketServer(
     private val onClientConnected: () -> Unit,
     private val onClientDisconnected: () -> Unit,
     private val onBeep: () -> Unit,
-    private val getDeviceId: () -> String // ← 追加
+    private val getDeviceId: () -> String,
+    private val getAccel: () -> Triple<Float, Float, Float>
 ) : Thread() {
 
     override fun run() {
@@ -25,7 +22,6 @@ class ScpiSocketServer(
                 val client = serverSocket.accept()
                 Log.d("SCPI", "Client accepted: ${client.inetAddress.hostAddress}")
 
-                // クライアントごとにスレッドを分離
                 Thread {
                     handleClient(client)
                 }.start()
@@ -49,20 +45,21 @@ class ScpiSocketServer(
 
                 when (trimmed?.uppercase()) {
                     "*IDN?" -> {
-                        val manufacturer = Build.MANUFACTURER
-                        val model = Build.MODEL
-                        val serialNumber = getDeviceId() // ← ここで呼び出し
-                        val buildId = Build.ID
-
-                        val deviceInfo = "$model,$manufacturer,$serialNumber,$buildId"
-                        writer.write("$deviceInfo\n")
+                        val idn = "LXIroid,nomulabo,${getDeviceId()},1.0"
+                        writer.write("$idn\n")
                         writer.flush()
                     }
 
                     "*BEEP" -> {
                         writer.write("BEEP OK\n")
                         writer.flush()
-                        onBeep() // ← ここで MainActivity の beep() を呼ぶ！
+                        onBeep()
+                    }
+
+                    "*ACCEL?" -> {
+                        val (x, y, z) = getAccel()
+                        writer.write("X=%.2f,Y=%.2f,Z=%.2f\n".format(x, y, z))
+                        writer.flush()
                     }
 
                     else -> {
@@ -72,10 +69,6 @@ class ScpiSocketServer(
                 }
             }
 
-        } catch (e: SocketException) {
-            Log.i("SCPI", "Client disconnected cleanly: ${e.message}")
-            // 接続終了として扱ってOK
-            onClientDisconnected()
         } catch (e: Exception) {
             Log.e("SCPI", "Client error", e)
         } finally {
