@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sensorManager: SensorManager
     private lateinit var accelerometer: Sensor
     private lateinit var webServer: LxiWebServer
+    private lateinit var webSocketServer: LxiWebSocketServer
     private var jmDNS: JmDNS? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,6 +44,16 @@ class MainActivity : AppCompatActivity() {
         // 状態表示用TextView
         val statusText = findViewById<TextView>(R.id.textStatus)
 
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
+
+        webSocketServer = LxiWebSocketServer(8081, this)
+        webSocketServer.start()
+
+        webServer = LxiWebServer(8080, this, webSocketServer)
+        sensorManager.registerListener(webServer, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        webServer.start()
+
         val scpiServer = ScpiSocketServer(
             onClientConnected = {
                 runOnUiThread { statusText.text = "Status: REMOTE" }
@@ -53,18 +64,12 @@ class MainActivity : AppCompatActivity() {
             onBeep = {
                 runOnUiThread { beep() }
             },
-            getDeviceId = { generateDeviceId() }
+            getDeviceId = { generateDeviceId() },
+            getAccel = { webServer.getAccel() }
         )
 
         scpiServer.start()
         startMdnsService(5025)
-
-        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
-
-        webServer = LxiWebServer(8080, this)
-        sensorManager.registerListener(webServer, accelerometer, SensorManager.SENSOR_DELAY_UI)
-        webServer.start()
 
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -89,6 +94,11 @@ class MainActivity : AppCompatActivity() {
             webServer.stop()
         } catch (e: Exception) {
             Log.w("WebServer", "Failed to stop web server", e)
+        }
+        try {
+            webSocketServer.stop()
+        } catch (e: Exception) {
+            Log.w("WebSocket", "Failed to stop WebSocket server", e)
         }
         try {
             jmDNS?.unregisterAllServices()

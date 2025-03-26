@@ -45,6 +45,8 @@ dependencies {
 
     implementation("org.jmdns:jmdns:3.5.5")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
+
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
