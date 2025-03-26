@@ -48,7 +48,7 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { statusText.text = "Status: IDLE" }
             },
             onBeep = {
-                runOnUiThread { beep() } // UIスレッドで音を鳴らす
+                runOnUiThread { beep() } // UIスレッドで音を鳴らす。
             },
             getDeviceId = { generateDeviceId() }
         )
