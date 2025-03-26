@@ -11,19 +11,23 @@ import android.widget.TextView
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.provider.Settings
-
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 import java.net.NetworkInterface
 import java.net.InetAddress
-
 import android.os.Build
-
 import android.util.Log
-import com.nomulabo.lxiroid.LxiWebServer
-
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var sensorManager: SensorManager
+    private lateinit var accelerometer: Sensor
+    private lateinit var webServer: LxiWebServer
+    private var jmDNS: JmDNS? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,7 +43,6 @@ class MainActivity : AppCompatActivity() {
         // 状態表示用TextView
         val statusText = findViewById<TextView>(R.id.textStatus)
 
-
         val scpiServer = ScpiSocketServer(
             onClientConnected = {
                 runOnUiThread { statusText.text = "Status: REMOTE" }
@@ -48,17 +51,21 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { statusText.text = "Status: IDLE" }
             },
             onBeep = {
-                runOnUiThread { beep() } // UIスレッドで音を鳴らす。
+                runOnUiThread { beep() }
             },
             getDeviceId = { generateDeviceId() }
         )
 
         scpiServer.start()
         startMdnsService(5025)
-        val webServer = LxiWebServer(8080, this)
+
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
+
+        webServer = LxiWebServer(8080, this)
+        sensorManager.registerListener(webServer, accelerometer, SensorManager.SENSOR_DELAY_UI)
         webServer.start()
 
-        // インセット調整（パディング設定）
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
@@ -66,17 +73,39 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ここに追加！
+    override fun onPause() {
+        super.onPause()
+        sensorManager.unregisterListener(webServer)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            sensorManager.unregisterListener(webServer)
+        } catch (e: Exception) {
+            Log.w("Sensor", "Failed to unregister listener", e)
+        }
+        try {
+            webServer.stop()
+        } catch (e: Exception) {
+            Log.w("WebServer", "Failed to stop web server", e)
+        }
+        try {
+            jmDNS?.unregisterAllServices()
+            jmDNS?.close()
+        } catch (e: Exception) {
+            Log.w("mDNS", "Failed to stop jmDNS", e)
+        }
+    }
+
     fun beep() {
         val toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
-        toneGen.startTone(ToneGenerator.TONE_CDMA_PIP, 150) // 150ms ピッ音
+        toneGen.startTone(ToneGenerator.TONE_CDMA_PIP, 150)
     }
 
     fun generateDeviceId(): String {
         return Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
     }
-
-    var jmDNS: JmDNS? = null
 
     fun startMdnsService(port: Int) {
         Thread {
@@ -88,7 +117,6 @@ class MainActivity : AppCompatActivity() {
 
                 jmDNS = JmDNS.create(inetAddress)
 
-                // 衝突回避つきサービス名
                 val baseName = "LXIroid"
                 var name = baseName
                 var counter = 1
@@ -107,15 +135,14 @@ class MainActivity : AppCompatActivity() {
                 )
 
                 val serviceInfo = ServiceInfo.create(
-                    "_scpi-raw._tcp.local.", // サービスタイプ
+                    "_scpi-raw._tcp.local.",
                     name,
                     port,
-                    0, 0, // priority, weight（通常は0）
+                    0, 0,
                     txtRecord
                 )
 
                 jmDNS!!.registerService(serviceInfo)
-
                 Log.d("mDNS", "Service registered: $name on $port")
             } catch (e: Exception) {
                 Log.e("mDNS", "Error starting mDNS", e)
