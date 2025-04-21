@@ -47,7 +47,7 @@ class MainActivity : AppCompatActivity() {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)!!
 
-        webSocketServer = LxiWebSocketServer(8081, this)
+        webSocketServer = LxiWebSocketServer(8081)
         webSocketServer.start()
 
         webServer = LxiWebServer(8080, this, webSocketServer)
@@ -81,6 +81,11 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(webServer)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        sensorManager.registerListener(webServer, accelerometer, SensorManager.SENSOR_DELAY_UI)
     }
 
     override fun onDestroy() {

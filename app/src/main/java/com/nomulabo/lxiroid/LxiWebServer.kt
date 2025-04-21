@@ -1,167 +1,125 @@
 package com.nomulabo.lxiroid
 
-import fi.iki.elonen.NanoHTTPD
-import android.os.Build
-import android.provider.Settings
-import android.content.Context
-import android.net.wifi.WifiManager
-import android.text.format.Formatter
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
-import android.hardware.SensorManager
+import android.util.Log
+import fi.iki.elonen.NanoHTTPD
 
 class LxiWebServer(
-    private val port: Int,
-    private val context: Context,
-    private val webSocketServer: LxiWebSocketServer? = null
+    port: Int,
+    private val activity: MainActivity,
+    private val webSocketServer: LxiWebSocketServer
 ) : NanoHTTPD(port), SensorEventListener {
 
-    private var accelX: Float = 0f
-    private var accelY: Float = 0f
-    private var accelZ: Float = 0f
+    private var lastX = 0f
+    private var lastY = 0f
+    private var lastZ = 0f
+
+    override fun serve(session: IHTTPSession?): Response {
+        val uri = session?.uri ?: "/"
+        return when (uri) {
+            "/lxi" -> newFixedLengthResponse("""
+                <html><head><title>LXIroid</title></head><body>
+                <h1>LXIroid</h1>
+                <ul>
+                <li><a href="/lxi/identification">/lxi/identification</a></li>
+                <li><a href="/lxi/accel">/lxi/accel</a></li>
+                <li><a href="/lxi/graph">/lxi/graph</a></li>
+                </ul>
+                </body></html>
+            """)
+
+            "/lxi/identification" -> newFixedLengthResponse("""
+                <html><body><pre>${activity.generateDeviceId()}</pre></body></html>
+            """)
+
+            "/lxi/accel" -> {
+                val (x, y, z) = getAccel()
+                newFixedLengthResponse("""
+                    <html><body>
+                    <h1>Accelerometer</h1>
+                    X: $x<br>
+                    Y: $y<br>
+                    Z: $z
+                    </body></html>
+                """)
+            }
+
+            "/lxi/graph" -> newFixedLengthResponse("""
+                <html>
+<head>
+    <meta charset="utf-8">
+    <title>Real-Time Acceleration Graph</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>リアルタイム加速度グラフ</h1>
+    <canvas id="accelChart" width="400" height="200"></canvas>
+    <script>
+        const ctx = document.getElementById('accelChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'X', data: [], borderColor: 'red', fill: false },
+                    { label: 'Y', data: [], borderColor: 'green', fill: false },
+                    { label: 'Z', data: [], borderColor: 'blue', fill: false }
+                ]
+            },
+            options: {
+                animation: false,
+                responsive: true,
+                scales: {
+                    y: { min: -15, max: 15 }
+                }
+            }
+        });
+
+        const ws = new WebSocket(`ws://${"$"}{location.hostname}:8081`);
+
+        ws.onmessage = (e) => {
+            const d = JSON.parse(e.data);
+            chart.data.labels.push('');
+            chart.data.datasets[0].data.push(d.X);
+            chart.data.datasets[1].data.push(d.Y);
+            chart.data.datasets[2].data.push(d.Z);
+            if (chart.data.labels.length > 50) {
+                chart.data.labels.shift();
+                chart.data.datasets.forEach(ds => ds.data.shift());
+            }
+            chart.update();
+        };
+
+        setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send("ping");
+            }
+        }, 3000);
+    </script>
+</body>
+</html>
+            """)
+
+            else -> newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "Not Found")
+        }
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        event?.let {
+            lastX = it.values[0]
+            lastY = it.values[1]
+            lastZ = it.values[2]
+            Thread {
+                webSocketServer.broadcastAccel(lastX, lastY, lastZ)
+            }.start()
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     fun getAccel(): Triple<Float, Float, Float> {
-        return Triple(accelX, accelY, accelZ)
-    }
-
-    init {
-        val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_NORMAL)
-    }
-
-    override fun serve(session: IHTTPSession): Response {
-        return when (session.uri) {
-            "/lxi" -> newFixedLengthResponse(getWelcomePage())
-            "/lxi/identification" -> newFixedLengthResponse(getIdentificationJson())
-            "/lxi/accel" -> newFixedLengthResponse(getAccelJson())
-            "/lxi/graph" -> newFixedLengthResponse(getGraphPage())
-            else -> newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Not Found")
-        }
-    }
-
-    private fun getWelcomePage(): String {
-        val manufacturer = Build.MANUFACTURER
-        val model = Build.MODEL
-        val serial = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-        val firmware = Build.ID
-        val hostname = "$model.local"
-        val ip = getDeviceIpAddress()
-
-        return """
-            <html>
-            <head><title>LXIroid Web UI</title></head>
-            <body>
-                <h1>LXIroid</h1>
-                <p>Manufacturer: $manufacturer</p>
-                <p>Model: $model</p>
-                <p>Serial Number: $serial</p>
-                <p>Firmware Version: $firmware</p>
-                <p>LXI Version: 1.6</p>
-                <p>Hostname: $hostname</p>
-                <p>IP Address: $ip</p>
-                <p>VISA Address: TCPIP::$hostname::5025::SOCKET</p>
-                <h2>Accelerometer</h2>
-                <p>X: $accelX</p>
-                <p>Y: $accelY</p>
-                <p>Z: $accelZ</p>
-                <p><a href="/lxi/graph">View Real-Time Graph</a></p>
-            </body>
-            </html>
-        """.trimIndent()
-    }
-
-    private fun getIdentificationJson(): String {
-        val manufacturer = Build.MANUFACTURER
-        val model = Build.MODEL
-        val serial = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
-        val firmware = Build.ID
-        val hostname = "$model.local"
-        val ip = getDeviceIpAddress()
-
-        return """
-            {
-              "Manufacturer": "$manufacturer",
-              "Model": "$model",
-              "SerialNumber": "$serial",
-              "FirmwareVersion": "$firmware",
-              "Hostname": "$hostname",
-              "MACAddress": "xx:xx:xx:xx:xx:xx",
-              "IPAddress": "$ip",
-              "LXI": {
-                "Version": "1.6",
-                "ExtendedFunctions": []
-              }
-            }
-        """.trimIndent()
-    }
-
-    private fun getAccelJson(): String {
-        return """
-            {
-              "Accelerometer": {
-                "X": $accelX,
-                "Y": $accelY,
-                "Z": $accelZ
-              }
-            }
-        """.trimIndent()
-    }
-
-    private fun getGraphPage(): String {
-        return """
-            <html>
-            <head><title>Live Accel Graph</title></head>
-            <body>
-                <h1>リアルタイム加速度センサー</h1>
-                <div id="output">接続中...</div>
-                <script>
-                    window.onload = function() {
-                        const output = document.getElementById("output");
-                        try {
-                            const ws = new WebSocket("ws://" + location.hostname + ":8081/");
-                            ws.onopen = () => output.textContent = "WebSocket 接続成功";
-                            ws.onerror = (e) => output.textContent = "接続エラー";
-                            ws.onmessage = function(e) {
-                                const d = JSON.parse(e.data);
-                                output.textContent = "X=" + d.X.toFixed(2) + " Y=" + d.Y.toFixed(2) + " Z=" + d.Z.toFixed(2);
-                            };
-                            setInterval(() => {
-                                if (ws.readyState === WebSocket.OPEN) {
-                                    ws.send("ping");
-                                }
-                            }, 3000);
-                        } catch (e) {
-                            output.textContent = "WebSocket 初期化エラー";
-                        }
-                    };
-                </script>
-            </body>
-            </html>
-        """.trimIndent()
-    }
-
-    private fun getDeviceIpAddress(): String {
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        return Formatter.formatIpAddress(wifiManager.connectionInfo.ipAddress)
-    }
-
-    override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type == Sensor.TYPE_ACCELEROMETER) {
-            accelX = event.values[0]
-            accelY = event.values[1]
-            accelZ = event.values[2]
-
-            webSocketServer?.let { server ->
-                Thread {
-                    server.broadcastAccel(accelX, accelY, accelZ)
-                }.start()
-            }
-        }
-    }
-
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // 不要なら空でOK
+        return Triple(lastX, lastY, lastZ)
     }
 }
